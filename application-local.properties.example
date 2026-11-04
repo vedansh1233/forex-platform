@@ -1,0 +1,5 @@
+# Copy to application-local.properties (gitignored) and fill in your local values.
+# Values here override application.properties (and the DB_PASSWORD / JWT_SECRET env vars).
+spring.datasource.password=change-me
+jwt.secret=replace-with-a-random-string-of-at-least-32-bytes
+# app.cors.allowed-origins=http://localhost:5173
