@@ -1,0 +1,7 @@
+target/
+.git/
+.idea/
+.vscode/
+*.log
+application-local.properties
+application-local.yml
