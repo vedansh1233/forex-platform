@@ -3,6 +3,8 @@ package com.forex.forex_platform;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.forex.forex_platform.repository.HoldingRepository;
+import com.forex.forex_platform.repository.LimitOrderRepository;
+import com.forex.forex_platform.repository.PriceAlertRepository;
 import com.forex.forex_platform.repository.UserRepository;
 import com.forex.forex_platform.repository.WalletRepository;
 import com.forex.forex_platform.repository.WalletTransactionRepository;
@@ -45,6 +47,12 @@ class TradingIntegrationTests {
     private WalletRepository walletRepository;
 
     @Autowired
+    private PriceAlertRepository alertRepository;
+
+    @Autowired
+    private LimitOrderRepository orderRepository;
+
+    @Autowired
     private HoldingRepository holdingRepository;
 
     @Autowired
@@ -52,6 +60,8 @@ class TradingIntegrationTests {
 
     @BeforeEach
     void cleanDatabase() {
+        alertRepository.deleteAll();
+        orderRepository.deleteAll();
         transactionRepository.deleteAll();
         holdingRepository.deleteAll();
         walletRepository.deleteAll();
@@ -231,11 +241,11 @@ class TradingIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(convertJson("USD", "USD", "10")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Choose two different currencies"));
+                .andExpect(jsonPath("$.message").value("Choose two different assets"));
 
         mvc.perform(post("/api/wallet/convert").header(HttpHeaders.AUTHORIZATION, token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(convertJson("USD", "BTC", "10")))
+                        .content(convertJson("USD", "XYZ", "10")))
                 .andExpect(status().isBadRequest());
 
         mvc.perform(post("/api/wallet/convert").header(HttpHeaders.AUTHORIZATION, token)
@@ -248,7 +258,7 @@ class TradingIntegrationTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(convertJson("USD", "EUR", "1.001")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors.amount").value("Amount can have at most 2 decimal places"));
+                .andExpect(jsonPath("$.message").value("USD amounts can have at most 2 decimal places"));
     }
 
     @Test

@@ -3,7 +3,6 @@ package com.forex.forex_platform.service.impl;
 import com.forex.forex_platform.dto.ConversionResponse;
 import com.forex.forex_platform.dto.ConvertRequest;
 import com.forex.forex_platform.dto.PageResponse;
-import com.forex.forex_platform.dto.RatesResponse;
 import com.forex.forex_platform.dto.TransactionResponse;
 import com.forex.forex_platform.dto.WalletResponse;
 import com.forex.forex_platform.dto.WalletResponse.HoldingResponse;
@@ -16,9 +15,12 @@ import com.forex.forex_platform.exception.BadRequestException;
 import com.forex.forex_platform.exception.ConflictException;
 import com.forex.forex_platform.exception.ResourceNotFoundException;
 import com.forex.forex_platform.exception.ServiceUnavailableException;
+import com.forex.forex_platform.market.Asset;
+import com.forex.forex_platform.market.Assets;
 import com.forex.forex_platform.repository.HoldingRepository;
 import com.forex.forex_platform.repository.WalletRepository;
 import com.forex.forex_platform.repository.WalletTransactionRepository;
+import com.forex.forex_platform.service.PricingService;
 import com.forex.forex_platform.service.RatesService;
 import com.forex.forex_platform.service.UserService;
 import com.forex.forex_platform.service.WalletService;
@@ -28,18 +30,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.MathContext;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
- * Wallet model: the base currency (USD) cash lives in {@code Wallet.balance}; every other
- * currency the user acquires through conversions lives in a {@link Holding} row.
+ * Wallet model: the base currency (USD) cash lives in {@code Wallet.balance}; every other asset
+ * (currency or crypto) the user acquires lives in a {@link Holding} row. Balance changes go
+ * through {@link WalletLedger}.
  */
 @Service
 @RequiredArgsConstructor
@@ -47,7 +48,6 @@ public class WalletServiceImpl implements WalletService {
 
     /** Demo (paper-trading) balance credited to every new wallet. */
     static final BigDecimal STARTING_BALANCE = new BigDecimal("10000.00");
-    static final String BASE_CURRENCY = "USD";
     static final int MAX_PAGE_SIZE = 100;
 
     private final WalletRepository walletRepository;
@@ -55,6 +55,8 @@ public class WalletServiceImpl implements WalletService {
     private final WalletTransactionRepository transactionRepository;
     private final UserService userService;
     private final RatesService ratesService;
+    private final PricingService pricingService;
+    private final WalletLedger ledger;
 
     @Override
     @Transactional
@@ -69,13 +71,13 @@ public class WalletServiceImpl implements WalletService {
         Wallet wallet = new Wallet();
         wallet.setUser(user);
         wallet.setBalance(STARTING_BALANCE);
-        wallet.setCurrency(BASE_CURRENCY);
+        wallet.setCurrency(Assets.BASE);
         wallet = walletRepository.save(wallet);
 
         WalletTransaction deposit = new WalletTransaction();
         deposit.setWallet(wallet);
         deposit.setType(TransactionType.DEPOSIT);
-        deposit.setToCurrency(BASE_CURRENCY);
+        deposit.setToCurrency(Assets.BASE);
         deposit.setToAmount(STARTING_BALANCE);
         transactionRepository.save(deposit);
 
@@ -92,47 +94,19 @@ public class WalletServiceImpl implements WalletService {
     @Override
     @Transactional
     public ConversionResponse convert(String email, ConvertRequest request) {
+        Asset from = Assets.require(request.from());
+        Asset to = Assets.require(request.to());
+        WalletLedger.validateTrade(from, to, request.amount());
 
-        String from = RatesService.requireSupported(request.from());
-        String to = RatesService.requireSupported(request.to());
-        if (from.equals(to)) {
-            throw new BadRequestException("Choose two different currencies");
-        }
-        BigDecimal amount = request.amount();
-
-        // Fetch the rate before taking the row lock, so a slow rates API doesn't hold it
-        BigDecimal rate = ratesService.rate(from, to);
-        // Round down so conversions never create money out of rounding
-        BigDecimal received = amount.multiply(rate).setScale(2, RoundingMode.DOWN);
+        // Fetch the rate before taking the row lock, so a slow price feed doesn't hold it
+        BigDecimal rate = pricingService.rate(from.code(), to.code());
 
         User user = userService.getByEmail(email);
         Wallet wallet = walletRepository.findByUserForUpdate(user)
                 .orElseThrow(() -> new ResourceNotFoundException("Wallet not found"));
 
-        Map<String, Holding> holdings = holdingRepository.findByWallet(wallet).stream()
-                .collect(Collectors.toMap(Holding::getCurrency, Function.identity()));
-
-        BigDecimal available = amountOf(wallet, holdings, from);
-        if (available.compareTo(amount) < 0) {
-            throw new BadRequestException(
-                    "Insufficient " + from + " balance: " + available.setScale(2, RoundingMode.DOWN).toPlainString() + " available");
-        }
-        if (received.signum() <= 0) {
-            throw new BadRequestException("Amount is too small to convert");
-        }
-
-        adjust(wallet, holdings, from, amount.negate());
-        adjust(wallet, holdings, to, received);
-
-        WalletTransaction tx = new WalletTransaction();
-        tx.setWallet(wallet);
-        tx.setType(TransactionType.CONVERSION);
-        tx.setFromCurrency(from);
-        tx.setFromAmount(amount);
-        tx.setToCurrency(to);
-        tx.setToAmount(received);
-        tx.setRate(rate);
-        tx = transactionRepository.save(tx);
+        Map<String, Holding> holdings = ledger.holdings(wallet);
+        WalletTransaction tx = ledger.convert(wallet, holdings, from, to, request.amount(), rate);
 
         return new ConversionResponse(
                 TransactionResponse.from(tx),
@@ -162,73 +136,50 @@ public class WalletServiceImpl implements WalletService {
                 .orElseThrow(() -> new ResourceNotFoundException("Wallet not found"));
     }
 
-    private BigDecimal amountOf(Wallet wallet, Map<String, Holding> holdings, String currency) {
-        if (currency.equals(wallet.getCurrency())) {
-            return wallet.getBalance();
-        }
-        Holding holding = holdings.get(currency);
-        return holding == null ? BigDecimal.ZERO : holding.getAmount();
-    }
-
-    private void adjust(Wallet wallet, Map<String, Holding> holdings, String currency, BigDecimal delta) {
-        if (currency.equals(wallet.getCurrency())) {
-            wallet.setBalance(wallet.getBalance().add(delta));
-            return;
-        }
-        Holding holding = holdings.computeIfAbsent(currency, c -> new Holding(wallet, c));
-        holding.setAmount(holding.getAmount().add(delta));
-        holdingRepository.save(holding);
-    }
-
     private WalletResponse toResponse(Wallet wallet, List<Holding> holdings) {
         String base = wallet.getCurrency();
 
-        RatesResponse rates = null;
-        boolean hasForeign = holdings.stream().anyMatch(h -> h.getAmount().signum() != 0);
-        if (hasForeign) {
-            try {
-                rates = ratesService.latest(base);
-            } catch (ServiceUnavailableException e) {
-                // Still return the wallet; values are just unknown for now
-            }
-        }
-
         List<HoldingResponse> items = new ArrayList<>();
-        items.add(new HoldingResponse(base, scale(wallet.getBalance()), scale(wallet.getBalance())));
+        items.add(new HoldingResponse(base, scale(wallet.getBalance(), 2), scale(wallet.getBalance(), 2)));
 
         BigDecimal total = wallet.getBalance();
-        List<Holding> foreign = holdings.stream()
+        boolean hasForeignFiat = false;
+        List<Holding> nonZero = holdings.stream()
                 .filter(h -> h.getAmount().signum() != 0)
-                .sorted(Comparator.comparing(h -> RatesService.SUPPORTED_CURRENCIES.indexOf(h.getCurrency())))
+                .sorted(Comparator.comparingInt(h -> Assets.order(h.getCurrency())))
                 .toList();
 
-        for (Holding holding : foreign) {
+        for (Holding holding : nonZero) {
+            Asset asset = Assets.require(holding.getCurrency());
+            hasForeignFiat |= !asset.isCrypto();
             BigDecimal value = null;
-            BigDecimal rate = rates == null ? null : rates.rates().get(holding.getCurrency());
-            if (rate != null && rate.signum() > 0) {
-                value = holding.getAmount().divide(rate, MathContext.DECIMAL64).setScale(2, RoundingMode.HALF_EVEN);
+            try {
+                value = pricingService.usdValue(asset.code(), holding.getAmount());
+            } catch (ServiceUnavailableException e) {
+                // Still return the wallet; this value is just unknown for now
             }
-            if (value == null) {
-                total = null;
-            } else if (total != null) {
-                total = total.add(value);
-            }
-            items.add(new HoldingResponse(holding.getCurrency(), scale(holding.getAmount()), value));
+            total = value == null || total == null ? null : total.add(value);
+            items.add(new HoldingResponse(asset.code(), scale(holding.getAmount(), asset.decimals()), value));
+        }
+
+        LocalDate valuationDate = null;
+        if (hasForeignFiat && total != null) {
+            valuationDate = ratesService.latest(base).date();
         }
 
         return new WalletResponse(
                 wallet.getId(),
                 wallet.getUser().getFullName(),
-                scale(wallet.getBalance()),
+                scale(wallet.getBalance(), 2),
                 base,
                 wallet.getCreatedAt(),
                 items,
-                total == null ? null : scale(total),
-                hasForeign && rates != null ? rates.date() : null
+                total == null ? null : scale(total, 2),
+                valuationDate
         );
     }
 
-    private static BigDecimal scale(BigDecimal amount) {
-        return amount.setScale(2, RoundingMode.HALF_EVEN);
+    private static BigDecimal scale(BigDecimal amount, int decimals) {
+        return amount.setScale(decimals, RoundingMode.HALF_EVEN);
     }
 }

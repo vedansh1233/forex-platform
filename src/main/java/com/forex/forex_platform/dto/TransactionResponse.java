@@ -25,7 +25,7 @@ public record TransactionResponse(
                 tx.getFromAmount(),
                 tx.getToCurrency(),
                 tx.getToAmount(),
-                tx.getRate(),
+                tx.getRate() == null ? null : tx.getRate().stripTrailingZeros(),
                 tx.getCreatedAt()
         );
     }

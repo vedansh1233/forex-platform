@@ -3,6 +3,8 @@ package com.forex.forex_platform;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.forex.forex_platform.repository.HoldingRepository;
+import com.forex.forex_platform.repository.LimitOrderRepository;
+import com.forex.forex_platform.repository.PriceAlertRepository;
 import com.forex.forex_platform.repository.UserRepository;
 import com.forex.forex_platform.repository.WalletRepository;
 import com.forex.forex_platform.repository.WalletTransactionRepository;
@@ -40,6 +42,12 @@ class ApiIntegrationTests {
     private WalletRepository walletRepository;
 
     @Autowired
+    private PriceAlertRepository alertRepository;
+
+    @Autowired
+    private LimitOrderRepository orderRepository;
+
+    @Autowired
     private HoldingRepository holdingRepository;
 
     @Autowired
@@ -47,6 +55,8 @@ class ApiIntegrationTests {
 
     @BeforeEach
     void cleanDatabase() {
+        alertRepository.deleteAll();
+        orderRepository.deleteAll();
         transactionRepository.deleteAll();
         holdingRepository.deleteAll();
         walletRepository.deleteAll();

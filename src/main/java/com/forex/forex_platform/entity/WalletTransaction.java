@@ -31,20 +31,20 @@ public class WalletTransaction {
     @Column(nullable = false, length = 20)
     private TransactionType type;
 
-    @Column(length = 3)
+    @Column(length = 10)
     private String fromCurrency;
 
-    @Column(precision = 19, scale = 4)
+    @Column(precision = 28, scale = 8)
     private BigDecimal fromAmount;
 
-    @Column(nullable = false, length = 3)
+    @Column(nullable = false, length = 10)
     private String toCurrency;
 
-    @Column(nullable = false, precision = 19, scale = 4)
+    @Column(nullable = false, precision = 28, scale = 8)
     private BigDecimal toAmount;
 
     /** Units of toCurrency per 1 fromCurrency; null for deposits. */
-    @Column(precision = 19, scale = 8)
+    @Column(precision = 38, scale = 18)
     private BigDecimal rate;
 
     @Column(name = "created_at", nullable = false)
