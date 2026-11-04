@@ -2,8 +2,10 @@ package com.forex.forex_platform;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.forex.forex_platform.repository.HoldingRepository;
 import com.forex.forex_platform.repository.UserRepository;
 import com.forex.forex_platform.repository.WalletRepository;
+import com.forex.forex_platform.repository.WalletTransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,8 +39,16 @@ class ApiIntegrationTests {
     @Autowired
     private WalletRepository walletRepository;
 
+    @Autowired
+    private HoldingRepository holdingRepository;
+
+    @Autowired
+    private WalletTransactionRepository transactionRepository;
+
     @BeforeEach
     void cleanDatabase() {
+        transactionRepository.deleteAll();
+        holdingRepository.deleteAll();
         walletRepository.deleteAll();
         userRepository.deleteAll();
     }
